@@ -1,0 +1,24 @@
+{
+  "name": "dsh-workspace-manager",
+  "description": "Workspace path manager for DeepSeek Harness: relocate workspace paths safely through the official storage write-chain (workspace_relocate tool). 工作区路径管理：通过官方存储写链安全修改工作区注册路径。",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "index.js",
+  "files": [
+    "index.js"
+  ],
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "cordis",
+    "plugin",
+    "workspace",
+    "path",
+    "relocate"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": "^0.1.1-rc.2",
+    "@deepseek-ai/cordis": "^4.0.1"
+  }
+}

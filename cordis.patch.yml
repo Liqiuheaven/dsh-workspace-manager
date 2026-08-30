@@ -1,0 +1,5 @@
+# Registration example — add to ~/.dsh/profiles/web/cordis.patch.yml (local install)
+# 注册示例（本地安装）：把下面 3 行追加到 ~/.dsh/profiles/web/cordis.patch.yml
+- insert:
+    - id: dsh-workspace-manager
+      name: dsh-workspace-manager
