@@ -61,3 +61,24 @@ dsh-workspace-manager/
 3. **同步**：运行时目录 ↔ 发布仓库 `D:\AI_learn\deepseek_harness\dsh-workspace-manager\`
 4. **记录**：更新 `CHANGES.md` + 本手册（如果改动涉及故障/架构）
 5. **重启验证**：用 Chrome 打开 http://127.0.0.1:3080（Edge 打不开 DSH，已知问题，勿用 Edge 判断）
+
+## 六、版本管理与回退（Git）
+
+**运行时目录本身是 git 仓库**（`C:\Users\SAM\.dsh\profiles\node_modules\dsh-workspace-manager\.git`），每个发布版本打 tag（v0.1.0 / v0.2.0 / v0.2.1 / v0.3.0 …）；发布仓库 `D:\AI_learn\deepseek_harness\dsh-workspace-manager\` 是正式 git 仓库（GitHub Liqiuheaven/dsh-workspace-manager）。
+
+**崩溃回退流程（另一个 AI / 用户执行）**：
+```powershell
+$d = 'C:\Users\SAM\.dsh\profiles\node_modules\dsh-workspace-manager'
+git -C $d status          # 看当前改动（确认哪些文件被动过）
+git -C $d log --oneline   # 看版本历史
+git -C $d tag             # 看可用回退版本
+# 回退到上一个发布版本（例：v0.2.1）：
+git -C $d checkout v0.2.1 -- .
+# 或丢弃所有未提交改动（回到最近一次 commit）：
+git -C $d checkout -- .
+# 然后重启 dsh web 验证
+```
+
+**发布仓库同样可回退**：`git -C 'D:\AI_learn\deepseek_harness\dsh-workspace-manager' checkout <tag> -- .`，回退后如需重新发布 npm 记得改 package.json 版本号。
+
+**每次改动的规范动作**：改前 `git commit` 或确认干净工作区 → 改后验证（第五节）→ `git add -A && git commit -m "..."` → 发布版本打 tag → 更新 CHANGES.md。
