@@ -57,6 +57,15 @@ Never edit `workspace.json` directly — the in-memory domain state would overwr
 
 1. **Session cwd is immutable** (no official API). Workspace membership display filters sessions by `session cwd === workspace path`, so historical sessions whose cwd no longer exists fall into **ungrouped** — their logs are not lost.
 2. This plugin's write bypasses the official `WorkspaceRegistry` entity snapshot, so any **workspace/session writes** (attach/detach/rename/archive...) made *before a restart* could overwrite the relocation from a stale snapshot. Relocate, then restart — or just avoid other workspace operations until the next restart.
+3. **Refresh scope (UI)**: the plugin's own「工作区管理」panel reads the domain in-memory state and refreshes immediately; the official sidebar / file browser may need a **restart** to fully re-index, especially when the new path is far outside the old one (e.g. moved to a parent level).
+4. **File browser follows the session cwd**: after migrating, a workspace with **no sessions yet** shows an empty file browser — create a new session in the migrated workspace first, then the (copied) files appear.
+
+## Usage notes / 使用注意
+
+- 迁移只改**工作区注册路径**；「同时复制原目录内容」默认不勾选，勾选后按 预检冲突→复制→原目录处理(保留/.bak/删除) 执行
+- 改名（title）与改路径（path）互相独立：改名不影响对话归属，改路径后旧对话在官方列表进入「未分组」（历史不丢）
+- 大跨度改路径（如改到原路径上级）后，官方侧边栏/文件栏需**重启**才能完整刷新
+- 迁移后文件浏览器以会话 cwd 为准：新工作区空对话时看不到文件，新建对话后可见
 
 ## Uninstall / 卸载
 
