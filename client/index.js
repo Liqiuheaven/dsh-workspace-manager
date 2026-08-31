@@ -55,6 +55,15 @@ window.__ModuleLoader__.load({
       function doRelocate(ws, newPath) {
         var path = (newPath || "").trim();
         if (!path) { setErr("路径不能为空"); return; }
+        // 迁移前提醒（v0.2.1，方案 A）：有会话时告知会话将进入「未分组」，知情确认
+        if (ws.sessionCount > 0) {
+          var sure = window.confirm(
+            "「" + ws.title + "」有 " + ws.sessionCount + " 个对话。\n\n" +
+            "迁移工作区路径后，这些对话将进入「未分组」（历史记录不丢，新对话自动归属新路径）。\n\n" +
+            "确定继续迁移？"
+          );
+          if (!sure) return;
+        }
         setBusy(true); setErr(""); setNotice(null);
         rpc.call(CHANNEL, "relocate", { workspaceId: ws.workspaceId, newPath: path }).then(function (res) {
           setBusy(false);
@@ -63,7 +72,8 @@ window.__ModuleLoader__.load({
             setNotice({
               ok: true,
               text: (v.changed ? "✅ 已迁移：" : "ℹ️ 无变化：") + v.title + " → " + v.path +
-                (v.note ? "（" + v.note + "）" : "")
+                (v.note ? "（" + v.note + "）" : "") +
+                (v.changed && ws.sessionCount > 0 ? "（原 " + ws.sessionCount + " 个对话已进入未分组）" : "")
             });
             setDrafts({});
             load();

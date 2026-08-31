@@ -2,6 +2,10 @@
 
 > 每次修改后更新此文件（时间 / 改动 / 涉及文件 / 验证 / 回退）。详见 SELF-RESCUE.md。
 
+## 2026-08-31 v0.2.1（追加）— 迁移前会话提醒（方案 A）+ 方案 B 评估
+- **方案 A**（已实现）：client 端迁移前 `window.confirm` 提醒——有会话时告知「对话将进入未分组，历史记录不丢」；迁移成功后提示会话去向。涉及 client/index.js 的 doRelocate
+- **方案 B**（评估，未实施）：`方案B-会话跟随迁移.md`——官方无 cwd 更新通道，硬做需绕过持久层改 `jsonl.zstd` + 同步多个内存态（registry 索引 / session entity / projcache），风险高不建议；中期可调研官方 `dsh-session-log-export` 的导入能力
+
 ## 2026-08-31 v0.2.1 — 修复 client 加载崩溃（createWebConnectionRpc 未导出）
 - **问题**：v0.2.0 的 `client/index.js` 用 `require("@deepseek-ai/dsh-client-connection/client").createWebConnectionRpc`，该函数在 v0.1.1-rc.2 中**源码存在但未导出** → `createWebConnectionRpc is not a function` → 插件加载失败 → DSH web 启动即崩
 - **修复**（WorkBuddy 诊断 + 修改，2026-08-31 22:49）：
