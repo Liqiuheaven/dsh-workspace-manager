@@ -14,9 +14,13 @@ window.__ModuleLoader__.load({
     var useState = React.useState;
     var useEffect = React.useEffect;
     var useCallback = React.useCallback;
-    var createWebConnectionRpc = require("@deepseek-ai/dsh-client-connection/client").createWebConnectionRpc;
 
-    var rpc = createWebConnectionRpc();
+    // 修复记录（2026-08-31）：原代码 require("@deepseek-ai/dsh-client-connection/client")
+    // 取 createWebConnectionRpc——该函数在包源码中存在但未导出（v0.1.1-rc.2），
+    // 导致 "createWebConnectionRpc is not a function" 插件加载失败、DSH 无法启动。
+    // 正确写法：官方客户端已注册名为 "connection" 的服务（含 rpc.call），
+    // 在下方 inject 声明依赖后，从 ctx.connection.rpc 取调用器。
+    var rpc = null;                              // apply(ctx) 时从 ctx.connection.rpc 注入
     var CHANNEL = "/workspace-manager";
 
     // 常用根目录快捷填充（用户可自行增改）
@@ -168,9 +172,19 @@ window.__ModuleLoader__.load({
     }
 
     // —— 注册设置页分区（settings.section 官方插槽）——
-    var inject = ["slots"];
+    // 必须声明依赖 "connection" 服务（ctx.connection.rpc 的来源），
+    // 与 "slots"（官方设置页插槽服务）并列。
+    var inject = ["slots", "connection"];
 
     function apply(ctx) {
+      // 取官方 connection 服务上的通用 RPC 调用器（与 host 端 rpc.handle 配套）
+      if (!ctx.connection || !ctx.connection.rpc || typeof ctx.connection.rpc.call !== "function") {
+        // connection 服务不可用（版本过旧/未加载）：不注册分区，不影响其他插件
+        console.warn("[dsh-workspace-manager] ctx.connection.rpc 不可用，跳过工作区管理分区注册");
+        return;
+      }
+      rpc = ctx.connection.rpc;
+
       ctx.slots.inject("settings.section", function () {
         return ctx.slots.register({
           name: "settings.section",
