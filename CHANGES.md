@@ -2,6 +2,13 @@
 
 > 每次修改后更新此文件（时间 / 改动 / 涉及文件 / 验证 / 回退）。详见 SELF-RESCUE.md。
 
+## 2026-08-31 v0.3.0 — 原生目录选择器 + 可选内容复制迁移
+- **client**：每行加「浏览…」按钮 → 官方 `ctx.workspaces.pickDirectory()`（Windows 原生对话框，自带新建文件夹）；迁移确认区加「同时复制原目录内容到新路径」勾选（默认不勾）+ 原目录处理单选（保留/改名 .bak/删除）+ 警告文案
+- **host**：`relocate` 扩展 `moveFiles` + `oldDirAction`（keep/bak/delete）：预检同名冲突（有则中止并列出，不复制）→ 递归复制（中断自动回滚已复制内容）→ 按策略处理原目录（keep 不动 / bak 改名 .bak / delete 删除）
+- **验证**：node --check 双端通过；文件操作冒烟 13/13（复制+keep / 冲突预检中止+目标未覆盖+记录未写 / bak 改名 / delete 删除 / 幂等）
+- **涉及文件**：index.js（host 文件操作 + relocateCore 扩展）、client/index.js（浏览/复制选项）
+- **回退**：还原 v0.2.1 版本（git 历史 a3b011b 之前）
+
 ## 2026-08-31 v0.2.1（再追加）— 修复 UI 迁移不生效（window.confirm 被 iframe 拦截）
 - **问题**：方案 A 的 `window.confirm` 迁移提醒在 dsh 沙箱 iframe 中被静默拒绝（返回 false）→ `if (!sure) return` → **点迁移后无反应、不执行、刷新后路径还原**
 - **修复**：移除原生 confirm，改**内联两段式确认**（纯 React state）：有会话时点「迁移」→ 按钮变红「⚠️ 确认迁移」+ 行内警告文案 → 再点一次执行；改输入框/点还原取消确认态。iframe 安全
