@@ -1,7 +1,7 @@
 {
   "name": "dsh-workspace-manager",
-  "description": "Workspace path manager for DeepSeek Harness: relocate workspace paths safely through the official storage write-chain. 工作区路径管理：官方存储写链安全修改工作区注册路径；设置页「工作区管理」UI + workspace_relocate 工具。",
-  "version": "0.2.1",
+  "description": "Workspace path manager for DeepSeek Harness: relocate workspace paths safely through the official storage write-chain; native directory picker + optional content copy on migrate. 工作区路径管理：官方存储写链安全修改工作区注册路径；设置页「工作区管理」UI（原生目录选择器 + 可选内容复制迁移）。",
+  "version": "0.3.0",
   "type": "module",
   "main": "index.js",
   "exports": {

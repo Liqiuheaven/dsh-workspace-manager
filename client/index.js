@@ -1,10 +1,13 @@
-// dsh-workspace-manager —— client bundle（v0.2.0）
-// 设置页「工作区管理」分区：列出全部工作区，手动输入/修改路径后一键迁移。
-// 数据与操作走本插件 host 端 RPC channel /workspace-manager（list/relocate），
-// 路径存在性/防冲突由 host 校验（复用 workspace_relocate 同一逻辑）。
+// dsh-workspace-manager —— client bundle（v0.3.0）
+// 设置页「工作区管理」分区：列出全部工作区，原生目录选择器选路径，一键迁移；
+// 可选「同时复制原目录内容」（预检冲突→复制→原目录处理 keep/bak/delete）。
+// 数据与操作走本插件 host 端 RPC channel /workspace-manager（list/relocate）；
+// 目录选择用官方 WorkspaceRuntime.pickDirectory()（Windows 原生对话框，自带新建文件夹）。
 //
-// 说明：官方目录选择器（DirectoryBrowser）是 picker 包的内部组件（未导出），
-// 本版采用"路径输入 + host 校验"的安全路线；树形浏览后续版本再评估。
+// 修复记录：
+//  - v0.2.1：createWebConnectionRpc 未导出 → 改用 ctx.connection.rpc（官方 connection 服务）
+//  - v0.2.1：window.confirm 在沙箱 iframe 被静默拒绝 → 改内联两段式确认
+//  - v0.3.0：新增原生目录选择器 + 内容复制迁移
 //
 // 注意：纯 React.createElement（无 JSX，无编译步骤）；全部内联样式（不注入 CSS）。
 window.__ModuleLoader__.load({
@@ -15,12 +18,8 @@ window.__ModuleLoader__.load({
     var useEffect = React.useEffect;
     var useCallback = React.useCallback;
 
-    // 修复记录（2026-08-31）：原代码 require("@deepseek-ai/dsh-client-connection/client")
-    // 取 createWebConnectionRpc——该函数在包源码中存在但未导出（v0.1.1-rc.2），
-    // 导致 "createWebConnectionRpc is not a function" 插件加载失败、DSH 无法启动。
-    // 正确写法：官方客户端已注册名为 "connection" 的服务（含 rpc.call），
-    // 在下方 inject 声明依赖后，从 ctx.connection.rpc 取调用器。
-    var rpc = null;                              // apply(ctx) 时从 ctx.connection.rpc 注入
+    var rpc = null;              // apply(ctx) 时从 ctx.connection.rpc 注入
+    var workspaces = null;       // apply(ctx) 时从 ctx.workspaces 注入（pickDirectory）
     var CHANNEL = "/workspace-manager";
 
     // 常用根目录快捷填充（用户可自行增改）
@@ -37,10 +36,14 @@ window.__ModuleLoader__.load({
       var notice = noticeState[0], setNotice = noticeState[1];
       var draftsState = useState({});            // { [workspaceId]: 输入框内容 }
       var drafts = draftsState[0], setDrafts = draftsState[1];
-      // v0.2.1 修复：原生 window.confirm 在 dsh 沙箱 iframe 中被静默拒绝（返回 false），
-      // 导致迁移直接 return 不执行。改用内联两段式确认：confirmId 非空时按钮变「确认迁移」。
+      // 确认态（内联两段式，iframe 安全）：confirmId 非空时按钮变「确认迁移」
       var confirmIdState = useState(null);
       var confirmId = confirmIdState[0], setConfirmId = confirmIdState[1];
+      // 内容复制选项：moveByWs {id:bool}、oldActionByWs {id:'keep'|'bak'|'delete'}
+      var moveState = useState({});
+      var moveByWs = moveState[0], setMoveByWs = moveState[1];
+      var oldActionState = useState({});
+      var oldActionByWs = oldActionState[0], setOldActionByWs = oldActionState[1];
 
       var load = useCallback(function () {
         setErr(""); setNotice(null);
@@ -65,19 +68,32 @@ window.__ModuleLoader__.load({
           setConfirmId(ws.workspaceId);
           return;
         }
+        var payload = { workspaceId: ws.workspaceId, newPath: path };
+        var move = !!moveByWs[ws.workspaceId];
+        if (move) {
+          payload.moveFiles = true;
+          payload.oldDirAction = oldActionByWs[ws.workspaceId] || "keep";
+        }
         setConfirmId(null);
         setBusy(true); setErr(""); setNotice(null);
-        rpc.call(CHANNEL, "relocate", { workspaceId: ws.workspaceId, newPath: path }).then(function (res) {
+        rpc.call(CHANNEL, "relocate", payload).then(function (res) {
           setBusy(false);
           if (res && res.ok) {
             var v = res.value;
+            var extra = "";
+            if (v.fileResult && v.fileResult.moved) {
+              extra = "；已复制 " + v.fileResult.files + " 个文件，" + (v.fileResult.oldDir ? v.fileResult.oldDir.detail : "原目录处理完成");
+            } else if (v.fileResult && !v.fileResult.moved) {
+              extra = "；内容复制跳过（" + v.fileResult.reason + "）";
+            }
+            if (v.changed && ws.sessionCount > 0) extra += "（原 " + ws.sessionCount + " 个对话已进入未分组）";
             setNotice({
               ok: true,
-              text: (v.changed ? "✅ 已迁移：" : "ℹ️ 无变化：") + v.title + " → " + v.path +
-                (v.note ? "（" + v.note + "）" : "") +
-                (v.changed && ws.sessionCount > 0 ? "（原 " + ws.sessionCount + " 个对话已进入未分组）" : "")
+              text: (v.changed ? "✅ 已迁移：" : "ℹ️ 无变化：") + v.title + " → " + v.path + extra
             });
             setDrafts({});
+            setMoveByWs({});
+            setOldActionByWs({});
             load();
           } else {
             setErr((res && res.error && res.error.message) || "迁移失败");
@@ -89,9 +105,27 @@ window.__ModuleLoader__.load({
       }
 
       function fillQuick(ws, root) {
-        // 取旧路径最后一段作为新目录名：D:\AI_learn\测试 → root + 测试
         var seg = (ws.path || "").split(/[\\/]/).filter(Boolean).pop() || ws.title;
-        setDrafts({ ...drafts, [ws.workspaceId]: root + seg });
+        setDrafts(Object.assign({}, drafts, { [ws.workspaceId]: root + seg }));
+        setConfirmId(null);
+      }
+
+      function pickDir(ws) {
+        if (!workspaces || typeof workspaces.pickDirectory !== "function") {
+          setErr("原生目录选择器不可用（workspaces 服务未加载）");
+          return;
+        }
+        setBusy(true);
+        workspaces.pickDirectory().then(function (path) {
+          setBusy(false);
+          if (path) {
+            setDrafts(Object.assign({}, drafts, { [ws.workspaceId]: path }));
+            setConfirmId(null);
+          }
+        }).catch(function (e) {
+          setBusy(false);
+          setErr("选择目录失败：" + String((e && e.message) || e));
+        });
       }
 
       var rowStyle = {
@@ -111,6 +145,7 @@ window.__ModuleLoader__.load({
       };
       var primaryBtn = Object.assign({}, btnStyle, { background: "#3b82f6", color: "#fff" });
       var warnBtn = Object.assign({}, btnStyle, { background: "#d05c5c", color: "#fff" });
+      var dangerBtn = Object.assign({}, btnStyle, { background: "#fff3f3", color: "#d05c5c", border: "1px solid #d05c5c" });
 
       var body;
       if (err) {
@@ -126,6 +161,9 @@ window.__ModuleLoader__.load({
       } else {
         body = items.map(function (ws) {
           var draft = drafts[ws.workspaceId] !== undefined ? drafts[ws.workspaceId] : ws.path;
+          var moving = !!moveByWs[ws.workspaceId];
+          var oldAction = oldActionByWs[ws.workspaceId] || "keep";
+          var isConfirm = confirmId === ws.workspaceId;
           return React.createElement("div", { key: ws.workspaceId, style: rowStyle },
             React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 6 } },
               React.createElement("strong", { style: { fontSize: 13 } }, ws.title),
@@ -136,16 +174,21 @@ window.__ModuleLoader__.load({
                 value: draft,
                 onChange: function (e) {
                   setDrafts(Object.assign({}, drafts, { [ws.workspaceId]: e.target.value }));
-                  if (confirmId === ws.workspaceId) setConfirmId(null);
+                  if (isConfirm) setConfirmId(null);
                 },
                 style: inputStyle,
                 placeholder: "新目录绝对路径"
               }),
               React.createElement("button", {
+                onClick: function () { pickDir(ws); },
+                disabled: busy,
+                style: btnStyle
+              }, "浏览…"),
+              React.createElement("button", {
                 onClick: function () { doRelocate(ws, draft); },
                 disabled: busy,
-                style: confirmId === ws.workspaceId ? warnBtn : primaryBtn
-              }, busy ? "…" : (confirmId === ws.workspaceId ? "⚠️ 确认迁移" : "迁移")),
+                style: isConfirm ? warnBtn : primaryBtn
+              }, busy ? "…" : (isConfirm ? "⚠️ 确认迁移" : "迁移")),
               React.createElement("button", {
                 onClick: function () {
                   setDrafts(Object.assign({}, drafts, { [ws.workspaceId]: ws.path }));
@@ -154,9 +197,44 @@ window.__ModuleLoader__.load({
                 disabled: busy,
                 style: btnStyle
               }, "还原")),
-            confirmId === ws.workspaceId
+            isConfirm && ws.sessionCount > 0
               ? React.createElement("div", { style: { marginTop: 6, fontSize: 12, color: "#d05c5c", lineHeight: 1.5 } },
                   "⚠️ 该工作区有 " + ws.sessionCount + " 个对话，迁移后它们将进入「未分组」（历史记录不丢，新对话自动归属新路径）。再次点击「确认迁移」执行。")
+              : null,
+            React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, marginTop: 8 } },
+              React.createElement("label", { style: { fontSize: 12, display: "flex", alignItems: "center", gap: 4, cursor: "pointer" } },
+                React.createElement("input", {
+                  type: "checkbox",
+                  checked: moving,
+                  onChange: function (e) {
+                    setMoveByWs(Object.assign({}, moveByWs, { [ws.workspaceId]: e.target.checked }));
+                    setConfirmId(null);
+                  }
+                }),
+                "同时复制原目录内容到新路径"),
+              moving
+                ? React.createElement("span", { style: { fontSize: 11, color: "#8a8f99" } },
+                    "原目录处理：",
+                    React.createElement("select", {
+                      value: oldAction,
+                      onChange: function (e) {
+                        setOldActionByWs(Object.assign({}, oldActionByWs, { [ws.workspaceId]: e.target.value }));
+                        setConfirmId(null);
+                      },
+                      style: { fontSize: 12, padding: "2px 6px" }
+                    },
+                      React.createElement("option", { value: "keep" }, "保留"),
+                      React.createElement("option", { value: "bak" }, "改名 .bak"),
+                      React.createElement("option", { value: "delete" }, "删除（危险）")))
+                : null),
+            moving
+              ? React.createElement("div", { style: { marginTop: 6, fontSize: 12, lineHeight: 1.5, wordBreak: "break-all" } },
+                  React.createElement("div", { style: { color: "#b58900" } },
+                    "⚠️ 复制/移动文件可能影响依赖这些路径的程序，建议先备份。"),
+                  React.createElement("div", { style: { color: "#8a8f99", marginTop: 2 } },
+                    "将把 " + ws.path + " 的内容复制到新路径：预检同名冲突（有则中止），中断自动回滚。" +
+                    (oldAction === "delete" ? "⚠️ 原目录将被删除（不可恢复）！" : "") +
+                    (oldAction === "bak" ? "原目录将改名为 .bak。" : "原目录保留不动。")))
               : null,
             React.createElement("div", { style: { display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap" } },
               QUICK_ROOTS.map(function (root) {
@@ -195,18 +273,20 @@ window.__ModuleLoader__.load({
     }
 
     // —— 注册设置页分区（settings.section 官方插槽）——
-    // 必须声明依赖 "connection" 服务（ctx.connection.rpc 的来源），
-    // 与 "slots"（官方设置页插槽服务）并列。
-    var inject = ["slots", "connection"];
+    // 依赖：slots（设置页插槽）、connection（RPC 调用）、workspaces（原生目录选择器）
+    var inject = ["slots", "connection", "workspaces"];
 
     function apply(ctx) {
-      // 取官方 connection 服务上的通用 RPC 调用器（与 host 端 rpc.handle 配套）
       if (!ctx.connection || !ctx.connection.rpc || typeof ctx.connection.rpc.call !== "function") {
-        // connection 服务不可用（版本过旧/未加载）：不注册分区，不影响其他插件
         console.warn("[dsh-workspace-manager] ctx.connection.rpc 不可用，跳过工作区管理分区注册");
         return;
       }
       rpc = ctx.connection.rpc;
+      if (ctx.workspaces && typeof ctx.workspaces.pickDirectory === "function") {
+        workspaces = ctx.workspaces;
+      } else {
+        console.warn("[dsh-workspace-manager] ctx.workspaces.pickDirectory 不可用，浏览按钮将禁用");
+      }
 
       ctx.slots.inject("settings.section", function () {
         return ctx.slots.register({

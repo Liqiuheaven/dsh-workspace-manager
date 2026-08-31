@@ -8,9 +8,10 @@
  * path 字段，避免绕过 domain 直接改文件导致的内存缓存覆盖。
  *
  * v0.1.0 —— host 工具插件：workspace_relocate（agent 对话式调用）
- * v0.2.0 —— 新增 client 端：设置页「工作区管理」分区（settings.section 官方
- *   插槽），列表 + 官方目录选择器 + 一键迁移；host 端暴露 RPC channel
- *   /workspace-manager（list / relocate），authority=loopback 只信任本机。
+ * v0.2.0 —— client 端设置页「工作区管理」分区 + RPC channel /workspace-manager
+ * v0.3.0 —— 原生目录选择器（client 调官方 pickDirectory）+ 内容迁移：
+ *   relocate 可选 moveFiles=true 时，预检同名冲突（有则中止）→ 递归复制到新目录
+ *   （中断自动回滚已复制内容）→ 原目录按 oldDirAction 处理（keep/bak/delete）。
  *
  * 已知边界（官方无通道，文档化）：
  *   1. 会话 header 的 cwd 官方不可更新；workspace 的会话展示归属按会话 cwd
@@ -22,21 +23,108 @@
  * 卸载：从 profiles/web/cordis.patch.yml 删除 dsh-workspace-manager 行，
  *       再删除本目录。
  */
-import { realpath, stat } from "node:fs/promises";
+import { realpath, stat, readdir, mkdir, copyFile, rename, rm } from "node:fs/promises";
+import { join, basename } from "node:path";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 
 export const name = "dsh-workspace-manager";
 export const inject = ["tools", "storageDomain", "connection"];
 
-/** 迁移核心逻辑（工具 execute 与 RPC relocate 共用）。@returns 迁移结果对象 */
+// ───────────────────────── 文件操作（内容迁移） ─────────────────────────
+
+/** 递归预检：目标树中与源树同名的条目（冲突路径列表）。目录同名继续深入，文件/混合类型算冲突。 */
+async function precheckConflicts(src, dst, conflicts = []) {
+  let entries;
+  try {
+    entries = await readdir(src, { withFileTypes: true });
+  } catch {
+    return conflicts;
+  }
+  for (const e of entries) {
+    const sp = join(src, e.name);
+    const dp = join(dst, e.name);
+    let dstStat = null;
+    try {
+      dstStat = await stat(dp);
+    } catch {
+      /* 目标无此条目 */
+    }
+    if (dstStat) {
+      if (e.isDirectory() && dstStat.isDirectory()) {
+        await precheckConflicts(sp, dp, conflicts);
+      } else {
+        conflicts.push(dp);
+      }
+    }
+  }
+  return conflicts;
+}
+
+/** 递归复制（保留目录结构），把创建过的目标路径记入 createdLog 供回滚。 */
+async function copyTree(src, dst, createdLog) {
+  await mkdir(dst, { recursive: true });
+  createdLog.push(dst);
+  const entries = await readdir(src, { withFileTypes: true });
+  for (const e of entries) {
+    const sp = join(src, e.name);
+    const dp = join(dst, e.name);
+    if (e.isDirectory()) {
+      await copyTree(sp, dp, createdLog);
+    } else if (e.isFile()) {
+      await copyFile(sp, dp);
+      createdLog.push(dp);
+    }
+    // 其他类型（符号链接等）跳过
+  }
+}
+
+/** 回滚：删除本次复制创建的路径（先深后浅，目录整体删）。 */
+async function rollbackCopy(createdLog) {
+  const sorted = [...createdLog].sort((a, b) => b.length - a.length);
+  for (const p of sorted) {
+    try {
+      await rm(p, { recursive: true, force: true });
+    } catch {
+      /* 忽略单点失败 */
+    }
+  }
+}
+
+/** 原目录改名 .bak（已存在则加序号），返回最终名字。 */
+async function backupDir(src) {
+  const dir = src.slice(0, src.lastIndexOf("\\") === -1 ? src.length : src.lastIndexOf("\\"));
+  const base = basename(src);
+  let target = join(dir, base + ".bak");
+  for (let i = 2; ; i++) {
+    try {
+      await stat(target);
+      target = join(dir, base + ".bak" + i);
+    } catch {
+      break;
+    }
+  }
+  await rename(src, target);
+  return target;
+}
+
+// ───────────────────────── 迁移核心逻辑 ─────────────────────────
+
+/**
+ * 迁移核心逻辑（工具 execute 与 RPC relocate 共用）。
+ * @param table workspace domain 表
+ * @param args { workspaceId, newPath, title?, moveFiles?, oldDirAction? }
+ */
 async function relocateCore(table, args) {
   const workspaceId = String(args.workspaceId ?? "");
   const newPath = String(args.newPath ?? "");
   const title = args.title === undefined ? undefined : String(args.title);
+  const moveFiles = args.moveFiles === true || args.moveFiles === "true";
+  const oldDirAction = moveFiles ? String(args.oldDirAction ?? "keep") : "keep";
   if (!workspaceId || !newPath) throw new Error("workspaceId 与 newPath 均为必填");
 
   const current = table.get(workspaceId);
   if (!current) throw new Error(`工作区不存在：${workspaceId}`);
+  const oldPath = current.path;
 
   // 1) 校验新路径存在且为目录，并规范化（同官方 create 的 canonical 语义）
   let canonical;
@@ -72,7 +160,50 @@ async function relocateCore(table, args) {
     };
   }
 
-  // 4) durable 写链更新（先落盘 → 改内存 → 广播 domain/changed）
+  // 4) 内容迁移（可选）：预检 → 复制 → 原目录处理
+  let fileResult = null;
+  if (moveFiles) {
+    let oldExists = true;
+    try {
+      await stat(oldPath);
+    } catch {
+      oldExists = false;
+    }
+    if (!oldExists) {
+      fileResult = { moved: false, reason: "原目录不存在，跳过内容复制" };
+    } else if (canonical === oldPath) {
+      fileResult = { moved: false, reason: "新旧路径相同，无需复制" };
+    } else {
+      // 4a) 预检冲突：有同名冲突则中止（不复制）
+      const conflicts = await precheckConflicts(oldPath, canonical);
+      if (conflicts.length > 0) {
+        const shown = conflicts.slice(0, 10).join("\n");
+        throw new Error(
+          `新目录存在 ${conflicts.length} 处同名冲突，已中止（未复制任何内容）：\n${shown}${conflicts.length > 10 ? "\n…" : ""}`
+        );
+      }
+      // 4b) 复制（中断自动回滚）
+      const createdLog = [];
+      try {
+        await copyTree(oldPath, canonical, createdLog);
+      } catch (error) {
+        await rollbackCopy(createdLog);
+        throw new Error(`复制中断，已回滚已复制内容：${error instanceof Error ? error.message : String(error)}`);
+      }
+      // 4c) 原目录处理
+      let oldDirResult = { action: "kept", detail: "原目录保留未动" };
+      if (oldDirAction === "bak") {
+        const bakPath = await backupDir(oldPath);
+        oldDirResult = { action: "bak", detail: `原目录已改名为 ${bakPath}` };
+      } else if (oldDirAction === "delete") {
+        await rm(oldPath, { recursive: true, force: true });
+        oldDirResult = { action: "delete", detail: "原目录已删除" };
+      }
+      fileResult = { moved: true, files: createdLog.filter((p) => !p.endsWith("\\") && !p.endsWith("/") && p !== canonical).length, oldDir: oldDirResult };
+    }
+  }
+
+  // 5) durable 写链更新（先落盘 → 改内存 → 广播 domain/changed）
   const next = {
     ...current,
     path: canonical,
@@ -87,9 +218,12 @@ async function relocateCore(table, args) {
     title: next.title,
     sessionCount: next.sessionIds.length,
     changed: true,
+    fileResult,
     note: "已写入磁盘；重启 dsh web 后官方列表完整刷新"
   };
 }
+
+// ───────────────────────── 插件 apply ─────────────────────────
 
 export function apply(ctx) {
   // ── v0.1.0 工具：workspace_relocate（agent 对话式）──
@@ -98,6 +232,8 @@ export function apply(ctx) {
     description:
       "修改 DeepSeek Harness 工作区（Workspace）的注册目录路径。适用场景：文件夹被移动/改名后，" +
       "工作区仍指向旧路径。会校验新路径存在、防止与其他工作区路径/标题冲突，并通过官方存储写链持久化。" +
+      "可选 moveFiles=true 时把原工作区目录内容复制到新目录（预检同名冲突→中止、中断自动回滚）；" +
+      "oldDirAction 控制复制后原目录处理：keep（保留，默认）/ bak（改名 .bak）/ delete（删除）。" +
       "注意：改动立即落盘，但官方 GUI 列表需重启 dsh web 后完整刷新；会话历史记录不受影响。",
     parameters: {
       workspaceId: {
@@ -113,6 +249,15 @@ export function apply(ctx) {
       title: {
         type: "string",
         description: "可选：同时修改工作区显示标题"
+      },
+      moveFiles: {
+        type: "boolean",
+        description: "可选：是否把原工作区目录内容复制到新目录（默认 false）"
+      },
+      oldDirAction: {
+        type: "string",
+        enum: ["keep", "bak", "delete"],
+        description: "可选：复制后原目录处理（keep/bak/delete，默认 keep；仅 moveFiles=true 时生效）"
       }
     },
     output: {
@@ -125,6 +270,7 @@ export function apply(ctx) {
           title: { type: "string", required: true },
           sessionCount: { type: "number", required: true },
           changed: { type: "boolean" },
+          fileResult: { type: "object", additionalProperties: true },
           note: { type: "string" }
         }
       },
@@ -151,7 +297,6 @@ export function apply(ctx) {
             sessionCount: record.sessionIds.length,
             updatedAt: record.updatedAt
           }));
-          // 按 workspaceIds 全局顺序排序（读 domain.global）
           const order = domain.global.get().workspaceIds ?? [];
           items.sort((a, b) => order.indexOf(a.workspaceId) - order.indexOf(b.workspaceId));
           return { ok: true, value: { items } };
@@ -162,11 +307,7 @@ export function apply(ctx) {
         }
         return {
           ok: false,
-          error: {
-            code: "command-error",
-            message: `未知端点：${endpoint}`,
-            details: {}
-          }
+          error: { code: "command-error", message: `未知端点：${endpoint}`, details: {} }
         };
       } catch (error) {
         return {
