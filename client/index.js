@@ -37,6 +37,10 @@ window.__ModuleLoader__.load({
       var notice = noticeState[0], setNotice = noticeState[1];
       var draftsState = useState({});            // { [workspaceId]: 输入框内容 }
       var drafts = draftsState[0], setDrafts = draftsState[1];
+      // v0.2.1 修复：原生 window.confirm 在 dsh 沙箱 iframe 中被静默拒绝（返回 false），
+      // 导致迁移直接 return 不执行。改用内联两段式确认：confirmId 非空时按钮变「确认迁移」。
+      var confirmIdState = useState(null);
+      var confirmId = confirmIdState[0], setConfirmId = confirmIdState[1];
 
       var load = useCallback(function () {
         setErr(""); setNotice(null);
@@ -55,15 +59,13 @@ window.__ModuleLoader__.load({
       function doRelocate(ws, newPath) {
         var path = (newPath || "").trim();
         if (!path) { setErr("路径不能为空"); return; }
-        // 迁移前提醒（v0.2.1，方案 A）：有会话时告知会话将进入「未分组」，知情确认
-        if (ws.sessionCount > 0) {
-          var sure = window.confirm(
-            "「" + ws.title + "」有 " + ws.sessionCount + " 个对话。\n\n" +
-            "迁移工作区路径后，这些对话将进入「未分组」（历史记录不丢，新对话自动归属新路径）。\n\n" +
-            "确定继续迁移？"
-          );
-          if (!sure) return;
+        // 有会话 → 第一段：进入确认态（不执行）；无会话 → 直接执行
+        if (ws.sessionCount > 0 && confirmId !== ws.workspaceId) {
+          setErr("");
+          setConfirmId(ws.workspaceId);
+          return;
         }
+        setConfirmId(null);
         setBusy(true); setErr(""); setNotice(null);
         rpc.call(CHANNEL, "relocate", { workspaceId: ws.workspaceId, newPath: path }).then(function (res) {
           setBusy(false);
@@ -108,6 +110,7 @@ window.__ModuleLoader__.load({
         padding: "6px 12px", fontSize: 12, cursor: "pointer", whiteSpace: "nowrap"
       };
       var primaryBtn = Object.assign({}, btnStyle, { background: "#3b82f6", color: "#fff" });
+      var warnBtn = Object.assign({}, btnStyle, { background: "#d05c5c", color: "#fff" });
 
       var body;
       if (err) {
@@ -131,20 +134,30 @@ window.__ModuleLoader__.load({
             React.createElement("div", { style: { display: "flex", gap: 6, marginTop: 8, alignItems: "center" } },
               React.createElement("input", {
                 value: draft,
-                onChange: function (e) { setDrafts(Object.assign({}, drafts, { [ws.workspaceId]: e.target.value })); },
+                onChange: function (e) {
+                  setDrafts(Object.assign({}, drafts, { [ws.workspaceId]: e.target.value }));
+                  if (confirmId === ws.workspaceId) setConfirmId(null);
+                },
                 style: inputStyle,
                 placeholder: "新目录绝对路径"
               }),
               React.createElement("button", {
                 onClick: function () { doRelocate(ws, draft); },
                 disabled: busy,
-                style: primaryBtn
-              }, busy ? "…" : "迁移"),
+                style: confirmId === ws.workspaceId ? warnBtn : primaryBtn
+              }, busy ? "…" : (confirmId === ws.workspaceId ? "⚠️ 确认迁移" : "迁移")),
               React.createElement("button", {
-                onClick: function () { setDrafts(Object.assign({}, drafts, { [ws.workspaceId]: ws.path })); },
+                onClick: function () {
+                  setDrafts(Object.assign({}, drafts, { [ws.workspaceId]: ws.path }));
+                  setConfirmId(null);
+                },
                 disabled: busy,
                 style: btnStyle
               }, "还原")),
+            confirmId === ws.workspaceId
+              ? React.createElement("div", { style: { marginTop: 6, fontSize: 12, color: "#d05c5c", lineHeight: 1.5 } },
+                  "⚠️ 该工作区有 " + ws.sessionCount + " 个对话，迁移后它们将进入「未分组」（历史记录不丢，新对话自动归属新路径）。再次点击「确认迁移」执行。")
+              : null,
             React.createElement("div", { style: { display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap" } },
               QUICK_ROOTS.map(function (root) {
                 return React.createElement("button", {

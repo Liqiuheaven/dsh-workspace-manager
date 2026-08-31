@@ -2,6 +2,12 @@
 
 > 每次修改后更新此文件（时间 / 改动 / 涉及文件 / 验证 / 回退）。详见 SELF-RESCUE.md。
 
+## 2026-08-31 v0.2.1（再追加）— 修复 UI 迁移不生效（window.confirm 被 iframe 拦截）
+- **问题**：方案 A 的 `window.confirm` 迁移提醒在 dsh 沙箱 iframe 中被静默拒绝（返回 false）→ `if (!sure) return` → **点迁移后无反应、不执行、刷新后路径还原**
+- **修复**：移除原生 confirm，改**内联两段式确认**（纯 React state）：有会话时点「迁移」→ 按钮变红「⚠️ 确认迁移」+ 行内警告文案 → 再点一次执行；改输入框/点还原取消确认态。iframe 安全
+- **验证**：node --check 通过；host RPC 实测正常（HTTP 直调 list/relocate 均成功）；「测试」经 RPC 恢复至 D:\AI_learn\test2
+- **附**：Console 报错 `Unchecked runtime.lastError: message port closed` 是浏览器扩展噪音（chrome.runtime API），与插件无关，可忽略
+
 ## 2026-08-31 v0.2.1（追加）— 迁移前会话提醒（方案 A）+ 方案 B 评估
 - **方案 A**（已实现）：client 端迁移前 `window.confirm` 提醒——有会话时告知「对话将进入未分组，历史记录不丢」；迁移成功后提示会话去向。涉及 client/index.js 的 doRelocate
 - **方案 B**（评估，未实施）：`方案B-会话跟随迁移.md`——官方无 cwd 更新通道，硬做需绕过持久层改 `jsonl.zstd` + 同步多个内存态（registry 索引 / session entity / projcache），风险高不建议；中期可调研官方 `dsh-session-log-export` 的导入能力
